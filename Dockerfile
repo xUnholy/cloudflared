@@ -1,6 +1,6 @@
 # use a builder image for building cloudflare
-ARG TARGET_GOOS=linux
-ARG TARGET_GOARCH=arm64
+ARG TARGET_GOOS
+ARG TARGET_GOARCH
 FROM golang:1.13.3 as builder
 ENV GO111MODULE=on \
     CGO_ENABLED=0 \
