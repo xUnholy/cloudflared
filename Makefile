@@ -7,10 +7,10 @@ PACKAGE_DIR   := $(CURDIR)/packaging
 INSTALL_BINDIR := usr/local/bin
 
 EQUINOX_FLAGS = --version="$(VERSION)" \
-				 --platforms="$(EQUINOX_BUILD_PLATFORMS)" \
-				 --app="$(EQUINOX_APP_ID)" \
-				 --token="$(EQUINOX_TOKEN)" \
-				 --channel="$(EQUINOX_CHANNEL)"
+	--platforms="$(EQUINOX_BUILD_PLATFORMS)" \
+	--app="$(EQUINOX_APP_ID)" \
+	--token="$(EQUINOX_TOKEN)" \
+	--channel="$(EQUINOX_CHANNEL)"
 
 ifeq ($(EQUINOX_IS_DRAFT), true)
 	EQUINOX_FLAGS := --draft $(EQUINOX_FLAGS)
