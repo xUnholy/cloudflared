@@ -2,6 +2,7 @@ package h2mux
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -20,6 +21,10 @@ var headerEncoding = base64.RawStdEncoding
 const (
 	RequestUserHeadersField  = "cf-cloudflared-request-headers"
 	ResponseUserHeadersField = "cf-cloudflared-response-headers"
+
+	ResponseMetaHeaderField   = "cf-cloudflared-response-meta"
+	ResponseSourceCloudflared = "cloudflared"
+	ResponseSourceOrigin      = "origin"
 )
 
 // H2RequestHeadersToH1Request converts the HTTP/2 headers coming from origintunneld
@@ -28,6 +33,10 @@ const (
 // HTTP/1 equivalents. See https://tools.ietf.org/html/rfc7540#section-8.1.2.3
 func H2RequestHeadersToH1Request(h2 []Header, h1 *http.Request) error {
 	for _, header := range h2 {
+		if !IsControlHeader(header.Name) {
+			continue
+		}
+
 		switch strings.ToLower(header.Name) {
 		case ":method":
 			h1.Method = header.Value
@@ -72,23 +81,20 @@ func H2RequestHeadersToH1Request(h2 []Header, h1 *http.Request) error {
 				return fmt.Errorf("unparseable content length")
 			}
 			h1.ContentLength = contentLength
-		case "connection", "upgrade":
-			// for websocket header support
-			h1.Header.Add(http.CanonicalHeaderKey(header.Name), header.Value)
+		case RequestUserHeadersField:
+			// Do not forward the serialized headers to the origin -- deserialize them, and ditch the serialized version
+			// Find and parse user headers serialized into a single one
+			userHeaders, err := ParseUserHeaders(RequestUserHeadersField, h2)
+			if err != nil {
+				return errors.Wrap(err, "Unable to parse user headers")
+			}
+			for _, userHeader := range userHeaders {
+				h1.Header.Add(http.CanonicalHeaderKey(userHeader.Name), userHeader.Value)
+			}
 		default:
-			// Ignore any other header;
-			// User headers will be read from `RequestUserHeadersField`
-			continue
+			// All other control headers shall just be proxied transparently
+			h1.Header.Add(http.CanonicalHeaderKey(header.Name), header.Value)
 		}
-	}
-
-	// Find and parse user headers serialized into a single one
-	userHeaders, err := ParseUserHeaders(RequestUserHeadersField, h2)
-	if err != nil {
-		return errors.Wrap(err, "Unable to parse user headers")
-	}
-	for _, userHeader := range userHeaders {
-		h1.Header.Add(http.CanonicalHeaderKey(userHeader.Name), userHeader.Value)
 	}
 
 	return nil
@@ -224,4 +230,20 @@ func CreateSerializedHeaders(headersField string, headers ...http.Header) []Head
 		headersField,
 		strings.Join(serializedHeaderChunks, ";"),
 	}}
+}
+
+type ResponseMetaHeader struct {
+	Source string `json:"src"`
+}
+
+func CreateResponseMetaHeader(headerName, source string) Header {
+	jsonResponseMetaHeader, err := json.Marshal(ResponseMetaHeader{Source: source})
+	if err != nil {
+		panic(err)
+	}
+
+	return Header{
+		Name:  headerName,
+		Value: string(jsonResponseMetaHeader),
+	}
 }

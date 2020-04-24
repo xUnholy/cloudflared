@@ -39,6 +39,8 @@ const (
 	lbProbeUserAgentPrefix   = "Mozilla/5.0 (compatible; Cloudflare-Traffic-Manager/1.0; +https://www.cloudflare.com/traffic-manager/;"
 	TagHeaderNamePrefix      = "Cf-Warp-Tag-"
 	DuplicateConnectionError = "EDUPCONN"
+	FeatureSerializedHeaders = "serialized_headers"
+	FeatureQuickReconnects   = "quick_reconnects"
 )
 
 type registerRPCName string
@@ -165,8 +167,16 @@ func (c *TunnelConfig) RegistrationOptions(connectionID uint8, OriginLocalIP str
 		RunFromTerminal:      c.RunFromTerminal,
 		CompressionQuality:   c.CompressionQuality,
 		UUID:                 uuid.String(),
-		Features:             connection.SupportedFeatures,
+		Features:             c.SupportedFeatures(),
 	}
+}
+
+func (c *TunnelConfig) SupportedFeatures() []string {
+	basic := []string{FeatureSerializedHeaders}
+	if c.UseQuickReconnects {
+		basic = append(basic, FeatureQuickReconnects)
+	}
+	return basic
 }
 
 func StartTunnelDaemon(ctx context.Context, config *TunnelConfig, connectedSignal *signal.Signal, cloudflaredID uuid.UUID, reconnectCh chan struct{}) error {
@@ -596,7 +606,7 @@ func (h *TunnelHandler) ServeStream(stream *h2mux.MuxedStream) error {
 
 	req, reqErr := h.createRequest(stream)
 	if reqErr != nil {
-		h.logError(stream, reqErr)
+		h.writeErrorResponse(stream, reqErr)
 		return reqErr
 	}
 
@@ -612,7 +622,7 @@ func (h *TunnelHandler) ServeStream(stream *h2mux.MuxedStream) error {
 		resp, respErr = h.serveHTTP(stream, req)
 	}
 	if respErr != nil {
-		h.logError(stream, respErr)
+		h.writeErrorResponse(stream, respErr)
 		return respErr
 	}
 	h.logResponseOk(resp, cfRay, lbProbe)
@@ -650,6 +660,7 @@ func (h *TunnelHandler) serveWebsocket(stream *h2mux.MuxedStream, req *http.Requ
 	// Copy to/from stream to the undelying connection. Use the underlying
 	// connection because cloudflared doesn't operate on the message themselves
 	websocket.Stream(conn.UnderlyingConn(), stream)
+
 	return response, nil
 }
 
@@ -677,7 +688,9 @@ func (h *TunnelHandler) serveHTTP(stream *h2mux.MuxedStream, req *http.Request) 
 	}
 	defer response.Body.Close()
 
-	err = stream.WriteHeaders(h2mux.H1ResponseToH2ResponseHeaders(response))
+	headers := h2mux.H1ResponseToH2ResponseHeaders(response)
+	headers = append(headers, h2mux.CreateResponseMetaHeader(h2mux.ResponseMetaHeaderField, h2mux.ResponseSourceOrigin))
+	err = stream.WriteHeaders(headers)
 	if err != nil {
 		return nil, errors.Wrap(err, "Error writing response header")
 	}
@@ -712,9 +725,12 @@ func (h *TunnelHandler) isEventStream(response *http.Response) bool {
 	return false
 }
 
-func (h *TunnelHandler) logError(stream *h2mux.MuxedStream, err error) {
+func (h *TunnelHandler) writeErrorResponse(stream *h2mux.MuxedStream, err error) {
 	h.logger.WithError(err).Error("HTTP request error")
-	stream.WriteHeaders([]h2mux.Header{{Name: ":status", Value: "502"}})
+	stream.WriteHeaders([]h2mux.Header{
+		{Name: ":status", Value: "502"},
+		h2mux.CreateResponseMetaHeader(h2mux.ResponseMetaHeaderField, h2mux.ResponseSourceCloudflared),
+	})
 	stream.Write([]byte("502 Bad Gateway"))
 	h.metrics.incrementResponses(h.connectionID, "502")
 }
